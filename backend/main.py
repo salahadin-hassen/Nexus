@@ -41,12 +41,12 @@ MAX_SATS_PER_GROUP: int = int(os.getenv("MAX_SATS_PER_GROUP", "500"))
 
 # ── CelesTrak TLE sources ─────────────────────────────────────────────────────
 TLE_SOURCES: Dict[str, str] = {
-    "starlink": "https://celestrak.org/SOCRATES/query.php?CODE=starlink&FORMAT=TLE",
-    "oneweb":   "https://celestrak.org/SOCRATES/query.php?CODE=oneweb&FORMAT=TLE",
-    "gps":      "https://celestrak.org/SOCRATES/query.php?CODE=gps-ops&FORMAT=TLE",
-    "weather":  "https://celestrak.org/SOCRATES/query.php?CODE=weather&FORMAT=TLE",
-    "stations": "https://celestrak.org/SOCRATES/query.php?CODE=stations&FORMAT=TLE",
-    "iridium":  "https://celestrak.org/SOCRATES/query.php?CODE=iridium-NEXT&FORMAT=TLE",
+    "starlink": "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
+    "oneweb":   "https://celestrak.org/NORAD/elements/gp.php?GROUP=oneweb&FORMAT=tle",
+    "gps":      "https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=tle",
+    "weather":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
+    "stations": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
+    "iridium":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-NEXT&FORMAT=tle",
 }
 
 # ── In-memory satellite registry ─────────────────────────────────────────────
