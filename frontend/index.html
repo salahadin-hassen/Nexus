@@ -1,0 +1,1920 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NEXUS - Satellite Tracking</title>
+<link rel="icon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    color-scheme: dark;
+
+    /* ── Void palette ── */
+    --void:        #010208;
+    --panel:       rgba(3, 8, 16, 0.97);
+    --panel-mid:   rgba(4, 11, 22, 0.92);
+    --glass:       rgba(5, 14, 26, 0.85);
+    --inset:       rgba(0, 0, 0, 0.42);
+
+    /* ── Border hierarchy ── */
+    --line:        rgba(110, 195, 255, 0.11);
+    --line-mid:    rgba(110, 195, 255, 0.20);
+    --line-strong: rgba(110, 195, 255, 0.34);
+    --line-accent: rgba(98, 223, 255, 0.52);
+
+    /* ── Colors ── */
+    --cyan:        #62dfff;
+    --cyan-dim:    #3bbce8;
+    --blue:        #5a8cff;
+    --green:       #45f2a4;
+    --amber:       #ffd166;
+    --orange:      #ff8a3d;
+    --rose:        #ff5d8f;
+    --purple:      #a78bfa;
+
+    /* ── Text ── */
+    --text:        #eef9ff;
+    --muted:       #6ea8c4;
+    --dim:         #375568;
+    --ghost:       #1c2f3e;
+
+    /* ── Glows ── */
+    --glow-cyan:   rgba(98, 223, 255, 0.20);
+    --shadow:      rgba(0, 0, 0, 0.62);
+
+    --mono:    "JetBrains Mono", ui-monospace, SFMono-Regular, Consolas, monospace;
+    --display: "Syne", Inter, system-ui, sans-serif;
+    --ease:    cubic-bezier(0.22, 1, 0.36, 1);
+    --sidebar-w: min(22rem, 92vw);
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    width: 100%;
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(ellipse 60% 50% at 74% 22%, rgba(98, 223, 255, 0.055), transparent),
+      radial-gradient(ellipse 40% 35% at 12% 78%, rgba(90, 140, 255, 0.038), transparent),
+      var(--void);
+    color: var(--text);
+    font-family: var(--mono);
+    overflow: hidden;
+    cursor: crosshair;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  input {
+    cursor: text;
+  }
+
+  #globe-wrap {
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+  }
+
+  #globe-wrap::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      linear-gradient(90deg,
+        rgba(1, 2, 8, 0.82) 0,
+        rgba(1, 2, 8, 0.26) calc(var(--sidebar-w) + 2rem),
+        transparent        calc(var(--sidebar-w) + 10rem)),
+      radial-gradient(ellipse at 62% 50%,
+        transparent 28%,
+        rgba(0,0,0,0.08) 52%,
+        rgba(0,0,0,0.58) 100%);
+  }
+
+  .scanline {
+    position: fixed;
+    inset: 0;
+    z-index: 5;
+    pointer-events: none;
+    opacity: 0.10;
+    background-image: repeating-linear-gradient(
+      0deg,
+      rgba(255,255,255,0.022) 0px, rgba(255,255,255,0.022) 1px,
+      transparent 1px, transparent 3px
+    );
+    mix-blend-mode: screen;
+  }
+
+  #loader {
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    display: grid;
+    place-items: center;
+    background:
+      radial-gradient(ellipse 50% 44% at 50% 46%, rgba(98,223,255,0.10), transparent),
+      var(--void);
+    transition: opacity 0.55s var(--ease), visibility 0.55s var(--ease);
+  }
+
+  #loader.out {
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+  }
+
+  .loader-inner {
+    width: min(17rem, 78vw);
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  /* Compound dual-ring spinner */
+  .spinner-wrap {
+    position: relative;
+    width: 4rem; height: 4rem;
+    margin-bottom: 1.5rem;
+  }
+  .spinner {
+    position: absolute; inset: 0;
+    border-radius: 50%;
+    border: 1.5px solid rgba(98,223,255,0.18);
+    border-top-color: var(--cyan);
+    animation: spin 0.9s linear infinite;
+    box-shadow: 0 0 1.8rem rgba(98,223,255,0.20);
+  }
+  .spinner-inner {
+    position: absolute;
+    inset: 8px;
+    border-radius: 50%;
+    border: 1px solid rgba(69,242,164,0.12);
+    border-bottom-color: var(--green);
+    animation: spin 1.5s linear infinite reverse;
+  }
+  .spinner-dot {
+    position: absolute;
+    top: 50%; left: 50%;
+    width: 6px; height: 6px;
+    margin: -3px 0 0 -3px;
+    border-radius: 50%;
+    background: var(--cyan);
+    box-shadow: 0 0 10px var(--cyan);
+    animation: dotpulse 1.8s ease-in-out infinite;
+  }
+  @keyframes dotpulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.5)} }
+
+  .loader-brand {
+    font-family: var(--display);
+    font-size: 1.2rem;
+    font-weight: 800;
+    letter-spacing: 0.35rem;
+    text-transform: uppercase;
+    margin-bottom: 0.45rem;
+    background: linear-gradient(135deg, var(--text), var(--cyan));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .loader-copy {
+    color: var(--dim);
+    font-size: 0.62rem;
+    letter-spacing: 0.18rem;
+    text-transform: uppercase;
+    margin-bottom: 1.4rem;
+  }
+
+  .loader-bar {
+    width: 100%;
+    height: 1.5px;
+    overflow: hidden;
+    background: rgba(98,223,255,0.08);
+    border-radius: 1px;
+  }
+
+  .loader-bar span {
+    display: block;
+    width: 40%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, var(--cyan), var(--green), transparent);
+    animation: sweep 1.2s ease-in-out infinite;
+  }
+
+  #sidebar {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    width: var(--sidebar-w);
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+    padding: 1.1rem;
+    background: linear-gradient(175deg,
+      rgba(3, 9, 19, 0.99) 0%,
+      rgba(2, 6, 14, 0.97) 55%,
+      rgba(1, 4, 11, 0.98) 100%);
+    border-right: 1px solid var(--line);
+    box-shadow:
+      inset -1px 0 0 rgba(98,223,255,0.07),
+      2rem 0 5rem rgba(0,0,0,0.5);
+    backdrop-filter: blur(28px);
+    -webkit-backdrop-filter: blur(28px);
+    overflow: hidden;
+  }
+
+  /* Top edge glow line */
+  #sidebar::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(98,223,255,0.40), transparent);
+    pointer-events: none;
+  }
+
+  .brand-row,
+  .section-head,
+  .status-row,
+  .toolbar-row,
+  .card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+  }
+
+  .logo {
+    display: grid;
+    gap: 0.16rem;
+    font-family: var(--display);
+    line-height: 0.95;
+  }
+
+  .logo strong {
+    font-size: 1.52rem;
+    font-weight: 800;
+    letter-spacing: 0.22rem;
+    /* Subtle gradient text */
+    background: linear-gradient(135deg, var(--text) 40%, var(--cyan-dim) 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .logo span {
+    color: var(--dim);
+    font-family: var(--mono);
+    font-size: 0.58rem;
+    letter-spacing: 0.20rem;
+    text-transform: uppercase;
+  }
+
+  .live-pill,
+  .mode-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    min-height: 1.65rem;
+    padding: 0.28rem 0.58rem;
+    border: 1px solid rgba(69, 242, 164, 0.28);
+    border-radius: 999px;
+    color: var(--green);
+    background: rgba(69, 242, 164, 0.07);
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.10rem;
+    text-transform: uppercase;
+    white-space: nowrap;
+    transition: all 0.35s var(--ease);
+  }
+
+  .live-dot {
+    width: 0.42rem;
+    height: 0.42rem;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 7px currentColor;
+    animation: livepulse 2.2s ease-in-out infinite;
+  }
+  @keyframes livepulse {
+    0%,100% { opacity:1; box-shadow: 0 0 7px currentColor; }
+    50%      { opacity:0.4; box-shadow: none; }
+  }
+
+  .mode-pill.demo {
+    border-color: rgba(255, 209, 102, 0.30);
+    color: var(--amber);
+    background: rgba(255, 209, 102, 0.08);
+  }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    margin: 0 -1.1rem;
+  }
+
+  .stat {
+    min-width: 0;
+    padding: 0.85rem 0.8rem;
+    background: transparent;
+    text-align: center;
+    position: relative;
+  }
+  .stat + .stat { border-left: 1px solid var(--line); }
+
+  /* Per-stat color accents */
+  .stat:nth-child(1) span:first-child { color: var(--cyan); }
+  .stat:nth-child(2) span:first-child { color: var(--green); }
+  .stat:nth-child(3) span:first-child { color: var(--amber); }
+
+  .stat span:first-child {
+    display: block;
+    overflow: hidden;
+    font-size: clamp(1.05rem, 1.8vw, 1.45rem);
+    font-weight: 800;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    text-shadow: 0 0 20px currentColor;
+  }
+
+  .stat span:last-child {
+    display: block;
+    margin-top: 0.3rem;
+    color: var(--dim);
+    font-size: 0.58rem;
+    letter-spacing: 0.12rem;
+    text-transform: uppercase;
+  }
+
+  .search-wrap {
+    position: relative;
+  }
+
+  .search-wrap svg {
+    position: absolute;
+    top: 50%;
+    left: 0.75rem;
+    width: 0.88rem;
+    height: 0.88rem;
+    color: var(--dim);
+    transform: translateY(-50%);
+    pointer-events: none;
+    transition: color 0.2s;
+  }
+  .search-wrap:focus-within svg { color: var(--cyan); }
+
+  #search {
+    width: 100%;
+    height: 2.35rem;
+    padding: 0 0.8rem 0 2.1rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    outline: none;
+    color: var(--text);
+    background: var(--inset);
+    font-size: 0.72rem;
+    -webkit-appearance: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  #search::placeholder { color: var(--dim); }
+
+  #search:focus {
+    border-color: var(--line-accent);
+    box-shadow: 0 0 0 3px rgba(98, 223, 255, 0.07);
+  }
+
+  .section-head {
+    color: var(--dim);
+    font-size: 0.60rem;
+    font-weight: 700;
+    letter-spacing: 0.22rem;
+    text-transform: uppercase;
+  }
+
+  .section-head small {
+    color: var(--ghost);
+    font-size: 0.58rem;
+    font-weight: 500;
+    letter-spacing: 0.05rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Subtle rule under section heads */
+  .section-head-rule {
+    height: 1px;
+    background: var(--line);
+    margin: 0 -1.1rem;
+  }
+
+  #filters {
+    display: grid;
+    gap: 0.35rem;
+  }
+
+  .filter-btn {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 0.55rem;
+    width: 100%;
+    min-height: 2.05rem;
+    padding: 0.38rem 0.62rem;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    color: var(--muted);
+    background: rgba(0, 0, 0, 0.2);
+    text-align: left;
+    position: relative;
+    overflow: hidden;
+    transition: transform 0.16s var(--ease),
+                color 0.16s,
+                border-color 0.16s,
+                background 0.16s;
+  }
+  /* Left-wash fill on active */
+  .filter-btn::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--accent,#62dfff) 12%, transparent),
+      transparent 65%);
+    opacity: 0;
+    transition: opacity 0.18s;
+  }
+  .filter-btn:hover { transform: translateX(2px); color: var(--text); border-color: var(--line-mid); }
+  .filter-btn:hover::before { opacity: 0.8; }
+  .filter-btn.on {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    transform: translateX(3px);
+  }
+  .filter-btn.on::before { opacity: 1; }
+  .filter-btn:active { transform: translateX(1px) scale(0.99); }
+
+  .filter-dot {
+    width: 0.56rem;
+    height: 0.56rem;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 75%, transparent);
+    position: relative; z-index: 1;
+  }
+
+  .filter-name {
+    min-width: 0;
+    overflow: hidden;
+    font-size: 0.70rem;
+    font-weight: 700;
+    letter-spacing: 0.02rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    position: relative; z-index: 1;
+  }
+
+  .filter-count {
+    color: var(--dim);
+    font-size: 0.64rem;
+    font-variant-numeric: tabular-nums;
+    background: rgba(255,255,255,0.04);
+    padding: 0.08rem 0.38rem;
+    border-radius: 3px;
+    position: relative; z-index: 1;
+    transition: color 0.16s;
+  }
+  .filter-btn.on .filter-count { color: color-mix(in srgb, var(--accent) 80%, white); }
+
+  #sat-list {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    display: grid;
+    align-content: start;
+    gap: 0.42rem;
+    padding-right: 0.25rem;
+  }
+
+  #sat-list::-webkit-scrollbar { width: 0.22rem; }
+  #sat-list::-webkit-scrollbar-track { background: transparent; }
+  #sat-list::-webkit-scrollbar-thumb {
+    background: rgba(98,223,255,0.22);
+    border-radius: 999px;
+  }
+  #sat-list::-webkit-scrollbar-thumb:hover { background: rgba(98,223,255,0.38); }
+
+  .sat-item {
+    position: relative;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.12rem 0.75rem;
+    width: 100%;
+    padding: 0.60rem 0.68rem;
+    border: 1px solid transparent;
+    border-left: 2px solid var(--accent);
+    border-radius: 7px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.028);
+    text-align: left;
+    overflow: hidden;
+    transition: border-color 0.16s var(--ease),
+                background 0.16s,
+                box-shadow 0.16s,
+                transform 0.14s var(--ease);
+  }
+  .sat-item::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(90deg,
+      color-mix(in srgb, var(--accent) 7%, transparent),
+      transparent 55%);
+    opacity: 0;
+    transition: opacity 0.16s;
+    pointer-events: none;
+  }
+  .sat-item:hover {
+    transform: translateY(-1px);
+    border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+    background: rgba(255,255,255,0.038);
+    box-shadow: 0 3px 14px rgba(0,0,0,0.3);
+  }
+  .sat-item:hover::before { opacity: 1; }
+  .sat-item:active { transform: scale(0.995); }
+
+  .sat-item.sel {
+    border-color: color-mix(in srgb, var(--accent) 65%, transparent);
+    background: color-mix(in srgb, var(--accent) 9%, rgba(0,0,0,0.1));
+    box-shadow: 0 0 1.6rem color-mix(in srgb, var(--accent) 13%, transparent);
+  }
+  .sat-item.sel::before { opacity: 1; }
+
+  .sat-name {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    position: relative; z-index: 1;
+    grid-column: 1; grid-row: 1;
+  }
+
+  .sat-meta,
+  .sat-code {
+    color: var(--dim);
+    font-size: 0.60rem;
+    white-space: nowrap;
+    position: relative; z-index: 1;
+  }
+  .sat-meta { grid-column: 1; grid-row: 2; }
+
+  .sat-code {
+    justify-self: end;
+    align-self: start;
+    color: color-mix(in srgb, var(--accent) 80%, white);
+    font-weight: 700;
+    font-size: 0.58rem;
+    letter-spacing: 0.05rem;
+    grid-column: 2; grid-row: 1 / 3;
+    align-self: center;
+  }
+
+  .empty {
+    padding: 1rem;
+    border: 1px dashed var(--line);
+    border-radius: 7px;
+    color: var(--muted);
+    background: rgba(0, 0, 0, 0.16);
+    font-size: 0.70rem;
+    line-height: 1.6;
+    text-align: center;
+  }
+
+  #top-hud {
+    position: fixed;
+    top: 1rem;
+    right: 1rem;
+    z-index: 18;
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    max-width: calc(100vw - var(--sidebar-w) - 2rem);
+  }
+
+  .hud-card {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    height: 2.3rem;
+    padding: 0 0.75rem;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: rgba(2, 7, 14, 0.88);
+    box-shadow:
+      0 6px 28px rgba(0,0,0,0.5),
+      inset 0 1px 0 rgba(255,255,255,0.025);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    white-space: nowrap;
+  }
+
+  .hud-card svg {
+    width: 0.92rem;
+    height: 0.92rem;
+    color: var(--cyan);
+    flex-shrink: 0;
+  }
+
+  .hud-label {
+    color: var(--dim);
+    font-size: 0.54rem;
+    letter-spacing: 0.12rem;
+    text-transform: uppercase;
+    line-height: 1;
+    margin-bottom: 0.1rem;
+  }
+
+  .hud-value {
+    color: var(--text);
+    font-size: 0.70rem;
+    font-weight: 800;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+
+  #info-card {
+    position: fixed;
+    right: 1.1rem;
+    bottom: 5.9rem;
+    z-index: 30;
+    width: min(21rem, calc(100vw - 2.2rem));
+    /* Visibility toggle — enables CSS animation */
+    visibility: hidden;
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+    transition: opacity 0.24s var(--ease),
+                transform 0.24s var(--ease),
+                visibility 0s linear 0.24s;
+    padding: 1rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 12px;
+    background: linear-gradient(155deg,
+      rgba(7, 18, 30, 0.96),
+      rgba(3, 8, 17, 0.98));
+    box-shadow:
+      0 1.5rem 5rem rgba(0,0,0,0.65),
+      0 0 0 1px rgba(98,223,255,0.06),
+      inset 0 1px 0 rgba(255,255,255,0.04),
+      0 0 2.5rem rgba(98,223,255,0.04);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+  }
+  /* Top accent line matching constellation color */
+  #info-card::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 1.2rem; right: 1.2rem;
+    height: 1px;
+    background: linear-gradient(90deg,
+      transparent,
+      color-mix(in srgb, var(--accent,var(--cyan)) 55%, transparent),
+      transparent);
+    border-radius: 1px;
+  }
+
+  #info-card.show {
+    visibility: visible;
+    opacity: 1;
+    transform: none;
+    transition: opacity 0.24s var(--ease), transform 0.24s var(--ease);
+  }
+
+  .card-head {
+    padding-bottom: 0.85rem;
+    margin-bottom: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .card-title {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .card-title strong {
+    display: block;
+    overflow: hidden;
+    font-size: 0.92rem;
+    letter-spacing: 0;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  #sat-group {
+    display: inline-flex;
+    align-items: center;
+    min-height: 1.28rem;
+    margin-top: 0.42rem;
+    padding: 0.16rem 0.48rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 999px;
+    color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 11%, transparent);
+    font-size: 0.61rem;
+    font-weight: 800;
+    letter-spacing: 0.08rem;
+    text-transform: uppercase;
+  }
+
+  .track-pulse {
+    width: 2.6rem;
+    height: 2.6rem;
+    flex: 0 0 auto;
+    border: 1px solid color-mix(in srgb, var(--accent) 48%, transparent);
+    border-radius: 50%;
+    background:
+      radial-gradient(circle,
+        color-mix(in srgb, var(--accent) 88%, white) 0 2.5px,
+        transparent 2.5px 40%,
+        color-mix(in srgb, var(--accent) 12%, transparent) 40% 100%);
+    box-shadow:
+      0 0 16px color-mix(in srgb, var(--accent) 22%, transparent),
+      inset 0 0 8px color-mix(in srgb, var(--accent) 8%, transparent);
+    animation: trackspin 10s linear infinite;
+    position: relative;
+  }
+  .track-pulse::after {
+    content: '';
+    position: absolute;
+    inset: 5px;
+    border-radius: 50%;
+    border: 1px dashed color-mix(in srgb, var(--accent) 22%, transparent);
+    animation: trackspin 16s linear infinite reverse;
+  }
+  @keyframes trackspin { to { transform: rotate(360deg); } }
+
+  .ic-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.45rem;
+    margin-top: 0.85rem;
+  }
+
+  .ic-row {
+    min-width: 0;
+    padding: 0.58rem 0.62rem;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 7px;
+    background: rgba(0, 0, 0, 0.28);
+    position: relative;
+    overflow: hidden;
+  }
+  /* Left accent bar */
+  .ic-row::before {
+    content: '';
+    position: absolute;
+    top: 20%; bottom: 20%; left: 0;
+    width: 2px;
+    background: color-mix(in srgb, var(--accent,var(--cyan)) 32%, transparent);
+    border-radius: 1px;
+  }
+
+  .ic-row span:first-child {
+    display: block;
+    color: var(--dim);
+    font-size: 0.54rem;
+    letter-spacing: 0.10rem;
+    text-transform: uppercase;
+    margin-bottom: 0.24rem;
+  }
+
+  .ic-row span:last-child {
+    display: block;
+    overflow: hidden;
+    color: var(--text);
+    font-size: 0.78rem;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  #controls {
+    position: fixed;
+    right: 1.1rem;
+    bottom: 1.1rem;
+    left: calc(var(--sidebar-w) + 1.1rem);
+    z-index: 25;
+    display: flex;
+    align-items: center;
+    gap: 0.48rem;
+    padding: 0.48rem 0.55rem;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: rgba(2, 7, 14, 0.90);
+    box-shadow:
+      0 0.8rem 3.5rem rgba(0,0,0,0.52),
+      inset 0 1px 0 rgba(255,255,255,0.025);
+    backdrop-filter: blur(22px);
+    -webkit-backdrop-filter: blur(22px);
+  }
+  #controls::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 2rem; right: 2rem;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(98,223,255,0.35), transparent);
+    opacity: 0.55;
+  }
+
+  .ctrl {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.38rem;
+    min-width: 2.2rem;
+    height: 1.95rem;
+    padding: 0 0.65rem;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 7px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.028);
+    position: relative;
+    overflow: hidden;
+    transition: color 0.16s var(--ease),
+                border-color 0.16s,
+                background 0.16s,
+                transform 0.12s var(--ease),
+                box-shadow 0.16s;
+  }
+
+  .ctrl svg {
+    width: 0.92rem;
+    height: 0.92rem;
+    flex: 0 0 auto;
+  }
+
+  .ctrl span {
+    font-size: 0.65rem;
+    font-weight: 700;
+    white-space: nowrap;
+    letter-spacing: 0.03rem;
+  }
+
+  .ctrl:hover {
+    color: var(--cyan);
+    border-color: rgba(98, 223, 255, 0.34);
+    background: rgba(98, 223, 255, 0.07);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 10px rgba(0,0,0,0.3);
+  }
+  .ctrl:active { transform: scale(0.97); }
+  .ctrl.on {
+    color: var(--cyan);
+    border-color: rgba(98, 223, 255, 0.38);
+    background: rgba(98, 223, 255, 0.09);
+    box-shadow: 0 0 10px rgba(98,223,255,0.09), inset 0 1px 0 rgba(98,223,255,0.08);
+  }
+  .ctrl.on::after {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    height: 1px;
+    background: rgba(98,223,255,0.32);
+  }
+
+  .slider-control {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 11.5rem;
+    height: 1.95rem;
+    padding: 0 0.65rem;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 7px;
+    color: var(--muted);
+    background: rgba(255, 255, 255, 0.028);
+  }
+
+  .slider-control svg {
+    width: 0.9rem;
+    height: 0.9rem;
+    color: var(--amber);
+    flex-shrink: 0;
+  }
+
+  .slider-control label {
+    font-size: 0.62rem;
+    font-weight: 700;
+    white-space: nowrap;
+    color: var(--muted);
+  }
+
+  .slider-control input {
+    min-width: 3.5rem;
+    width: 100%;
+    accent-color: var(--amber);
+  }
+
+  @keyframes spin  { to { transform: rotate(360deg); } }
+  @keyframes sweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(250%); } }
+  @keyframes fadeup {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  /* Focus ring — accessible */
+  :focus-visible {
+    outline: 2px solid var(--cyan);
+    outline-offset: 2px;
+    border-radius: 4px;
+  }
+  button:focus:not(:focus-visible),
+  input:focus:not(:focus-visible) { outline: none; }
+
+  @media (max-width: 980px) {
+    :root { --sidebar-w: 100%; }
+    #sidebar {
+      width: 100%;
+      height: 44vh;
+      bottom: auto;
+      border-right: none;
+      border-bottom: 1px solid var(--line);
+    }
+
+    #globe-wrap::after {
+      background:
+        linear-gradient(180deg, rgba(1,2,8,0.88) 0, rgba(1,2,8,0.28) 44vh, transparent 68vh),
+        radial-gradient(ellipse at 50% 70%, transparent 0 12rem, rgba(0,0,0,0.5) 100%);
+    }
+
+    #top-hud { display: none; }
+
+    #controls {
+      left: 0.65rem;
+      right: 0.65rem;
+      bottom: 0.65rem;
+      flex-wrap: wrap;
+    }
+
+    .slider-control { flex: 1 1 10rem; }
+
+    #info-card {
+      right: 0.65rem;
+      width: calc(100vw - 1.3rem);
+      bottom: 7.5rem;
+    }
+  }
+
+  @media (max-width: 620px) {
+    #sidebar {
+      height: 48vh;
+      gap: 0.65rem;
+      padding: 0.85rem;
+    }
+
+    #filters {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.32rem;
+    }
+
+    .filter-btn { min-height: 1.9rem; padding: 0.32rem 0.48rem; }
+
+    .ctrl span,
+    .slider-control label { display: none; }
+
+    .slider-control { min-width: 7.5rem; }
+  }
+</style>
+</head>
+<body>
+  <div id="loader" aria-live="polite">
+    <div class="loader-inner">
+      <div class="spinner-wrap">
+        <div class="spinner"></div>
+        <div class="spinner-inner"></div>
+        <div class="spinner-dot"></div>
+      </div>
+      <div class="loader-brand">NEXUS</div>
+      <div class="loader-copy">Synchronizing orbital telemetry</div>
+      <div class="loader-bar"><span></span></div>
+    </div>
+  </div>
+
+  <div id="globe-wrap" aria-label="Interactive Earth with satellite positions"></div>
+  <div class="scanline"></div>
+
+  <aside id="sidebar">
+    <div class="brand-row">
+      <div class="logo" aria-label="NEXUS satellite tracking">
+        <strong>NEXUS</strong>
+        <span>Orbital Command</span>
+      </div>
+      <div class="mode-pill" id="mode-pill"><span class="live-dot"></span><span id="mode-label">Live</span></div>
+    </div>
+
+    <div class="stats" aria-label="Satellite statistics">
+      <div class="stat"><span id="total">0</span><span>Total</span></div>
+      <div class="stat"><span id="visible">0</span><span>Visible</span></div>
+      <div class="stat"><span id="avg-alt">0</span><span>Avg km</span></div>
+    </div>
+
+    <div class="search-wrap">
+      <i data-lucide="search" aria-hidden="true"></i>
+      <input id="search" type="search" placeholder="Search name or NORAD" autocomplete="off" spellcheck="false">
+    </div>
+
+    <div>
+      <div class="section-head">
+        <span>Constellation</span>
+        <small id="group-count">0 groups</small>
+      </div>
+      <div id="filters" style="margin-top:0.55rem;"></div>
+    </div>
+
+    <div class="section-head">
+      <span>Tracked Objects</span>
+      <small id="list-meta">0 shown</small>
+    </div>
+    <div id="sat-list"></div>
+  </aside>
+
+  <div id="top-hud" aria-label="Tracking status">
+    <div class="hud-card">
+      <i data-lucide="radio-tower" aria-hidden="true"></i>
+      <div>
+        <div class="hud-label">Source</div>
+        <div class="hud-value" id="source-label">Connecting</div>
+      </div>
+    </div>
+    <div class="hud-card">
+      <i data-lucide="clock-3" aria-hidden="true"></i>
+      <div>
+        <div class="hud-label">UTC</div>
+        <div class="hud-value" id="utc-clock">--:--:--</div>
+      </div>
+    </div>
+    <div class="hud-card">
+      <i data-lucide="sparkles" aria-hidden="true"></i>
+      <div>
+        <div class="hud-label">Render</div>
+        <div class="hud-value">Night Lights</div>
+      </div>
+    </div>
+  </div>
+
+  <section id="info-card" aria-live="polite" style="--accent: var(--cyan);">
+    <div class="card-head">
+      <div class="card-title">
+        <strong id="sat-name">No satellite selected</strong>
+        <span id="sat-group">Tracking</span>
+      </div>
+      <div class="track-pulse" aria-hidden="true"></div>
+    </div>
+    <div class="ic-grid">
+      <div class="ic-row"><span>NORAD</span><span id="norad">--</span></div>
+      <div class="ic-row"><span>Altitude</span><span id="alt">--</span></div>
+      <div class="ic-row"><span>Velocity</span><span id="vel">--</span></div>
+      <div class="ic-row"><span>Lat / Lon</span><span id="latlon">--</span></div>
+    </div>
+  </section>
+
+  <div id="controls" aria-label="Globe controls">
+    <button class="ctrl on" id="btn-rot" type="button" aria-pressed="true" title="Auto rotate">
+      <i data-lucide="rotate-cw" aria-hidden="true"></i><span>Rotate</span>
+    </button>
+    <button class="ctrl" id="btn-lbl" type="button" aria-pressed="false" title="Labels">
+      <i data-lucide="tags" aria-hidden="true"></i><span>Labels</span>
+    </button>
+    <button class="ctrl" id="btn-atm" type="button" aria-pressed="false" title="Atmosphere">
+      <i data-lucide="cloud-sun" aria-hidden="true"></i><span>Glow</span>
+    </button>
+    <button class="ctrl" id="btn-trails" type="button" aria-pressed="false" title="Orbit trails">
+      <i data-lucide="orbit" aria-hidden="true"></i><span>Trails</span>
+    </button>
+    <button class="ctrl" id="btn-home" type="button" title="Reset view">
+      <i data-lucide="crosshair" aria-hidden="true"></i><span>Home</span>
+    </button>
+    <div class="slider-control" title="Night-light brightness">
+      <i data-lucide="sun-medium" aria-hidden="true"></i>
+      <label for="brightness">Night</label>
+      <input id="brightness" type="range" min="0.45" max="1.65" value="1.22" step="0.05" aria-label="Night-light brightness">
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://esm.sh/three@0.179.1",
+        "three/": "https://esm.sh/three@0.179.1/",
+        "globe.gl": "https://esm.sh/globe.gl@2.39.0?external=three"
+      }
+    }
+  </script>
+
+  <script type="module">
+    import * as THREE from "three";
+    import Globe from "globe.gl";
+
+    // ── API Configuration ─────────────────────────────────────────────────────
+    // Option 1: Pass ?api=https://your-backend.railway.app in the URL
+    // Option 2: Set VITE_API_URL if using a build tool
+    // Option 3: Edit this default to your deployed backend URL
+    const API_BASE = (
+      new URLSearchParams(window.location.search).get("api") ||
+      window.__NEXUS_API__ ||           // injected by some hosts
+      "http://localhost:8000"           // ← replace with your backend URL
+    ).replace(/\/$/, "");              // strip trailing slash
+    const EARTH_DAY = "https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg";
+    const EARTH_NIGHT = "https://unpkg.com/three-globe/example/img/earth-night.jpg";
+    const EARTH_BUMP = "https://unpkg.com/three-globe/example/img/earth-topology.png";
+    const STARFIELD = "https://unpkg.com/three-globe/example/img/night-sky.png";
+    const EARTH_RADIUS_KM = 6371;
+    const MAX_LIST_ITEMS = 260;
+    const HOME_VIEW = { lat: 9.03, lng: 38.74, altitude: 1.42 };
+
+    const GROUPS = {
+      starlink: { label: "Starlink", short: "STL", color: "#5a8cff", inclination: 53, trailEvery: 8 },
+      oneweb: { label: "OneWeb", short: "OWB", color: "#ff8a3d", inclination: 87.9, trailEvery: 6 },
+      gps: { label: "GPS", short: "GPS", color: "#45f2a4", inclination: 55, trailEvery: 3 },
+      weather: { label: "Weather", short: "MET", color: "#62dfff", inclination: 98.7, trailEvery: 2 },
+      stations: { label: "Stations", short: "STA", color: "#ffd166", inclination: 51.6, trailEvery: 1 },
+      unknown: { label: "Other", short: "ORB", color: "#ff5d8f", inclination: 62, trailEvery: 8 }
+    };
+
+    const state = {
+      allSatellites: [],
+      selectedGroup: "all",
+      selectedId: null,
+      query: "",
+      autoRotate: true,
+      showLabels: false,
+      showAtmo: true,
+      showTrails: false,
+      demoMode: false,
+      sourceText: "Connecting",
+      nightBrightness: 1.22,
+      globeReady: false,
+      dataReady: false,
+      lastRenderKey: "",
+      lastDataAt: 0,
+      demoSeed: Date.now() % 10000
+    };
+
+    let globe;
+    let refreshTimer;
+    let demoFrame = 0;
+    const satelliteTextures = new Map();
+
+    const el = {
+      loader: document.getElementById("loader"),
+      total: document.getElementById("total"),
+      visible: document.getElementById("visible"),
+      avgAlt: document.getElementById("avg-alt"),
+      groupCount: document.getElementById("group-count"),
+      filters: document.getElementById("filters"),
+      satList: document.getElementById("sat-list"),
+      listMeta: document.getElementById("list-meta"),
+      search: document.getElementById("search"),
+      modePill: document.getElementById("mode-pill"),
+      modeLabel: document.getElementById("mode-label"),
+      sourceLabel: document.getElementById("source-label"),
+      clock: document.getElementById("utc-clock"),
+      infoCard: document.getElementById("info-card"),
+      satName: document.getElementById("sat-name"),
+      satGroup: document.getElementById("sat-group"),
+      norad: document.getElementById("norad"),
+      alt: document.getElementById("alt"),
+      vel: document.getElementById("vel"),
+      latlon: document.getElementById("latlon"),
+      btnRot: document.getElementById("btn-rot"),
+      btnLbl: document.getElementById("btn-lbl"),
+      btnAtm: document.getElementById("btn-atm"),
+      btnTrails: document.getElementById("btn-trails"),
+      btnHome: document.getElementById("btn-home"),
+      brightness: document.getElementById("brightness")
+    };
+
+    const fmt0 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 });
+    const fmt1 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+    const fmt2 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
+
+    function clamp(value, min, max) {
+      return Math.min(max, Math.max(min, value));
+    }
+
+    function wrapLng(lng) {
+      return ((((lng + 180) % 360) + 360) % 360) - 180;
+    }
+
+    function toNumber(value, fallback = 0) {
+      const number = Number(value);
+      return Number.isFinite(number) ? number : fallback;
+    }
+
+    function escapeHTML(value) {
+      return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function hashNumber(value) {
+      let hash = 2166136261;
+      const text = String(value);
+      for (let i = 0; i < text.length; i += 1) {
+        hash ^= text.charCodeAt(i);
+        hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+      }
+      return Math.abs(hash >>> 0) / 4294967295;
+    }
+
+    function groupInfo(group) {
+      return GROUPS[group] || GROUPS.unknown;
+    }
+
+    function normalizeSatellite(raw, index) {
+      const rawGroup = String(raw.group || raw.category || "unknown").toLowerCase();
+      const group = GROUPS[rawGroup] ? rawGroup : "unknown";
+      const id = String(raw.id ?? raw.norad ?? raw.norad_id ?? `${group}-${index + 1}`);
+      const name = String(raw.name || raw.satname || `${groupInfo(group).label} ${id}`);
+      return {
+        id,
+        name,
+        group,
+        lat: clamp(toNumber(raw.lat ?? raw.latitude), -89.8, 89.8),
+        lng: wrapLng(toNumber(raw.lng ?? raw.lon ?? raw.longitude)),
+        alt: clamp(toNumber(raw.alt ?? raw.altitude, 550), 120, 50000),
+        vel: clamp(toNumber(raw.vel ?? raw.velocity, 7.6), 0.1, 15),
+        source: raw
+      };
+    }
+
+    function generateDemoSatellites(time = Date.now()) {
+      const defs = [
+        ["starlink", 72, 540, 7.6],
+        ["oneweb", 28, 1200, 7.2],
+        ["gps", 24, 20200, 3.9],
+        ["weather", 18, 840, 7.4],
+        ["stations", 4, 420, 7.66]
+      ];
+      const seconds = time / 1000;
+      const sats = [];
+
+      defs.forEach(([group, count, altitude, velocity], groupIndex) => {
+        const info = groupInfo(group);
+        for (let i = 0; i < count; i += 1) {
+          const seed = hashNumber(`${state.demoSeed}-${group}-${i}`);
+          const plane = i % Math.max(1, Math.round(Math.sqrt(count)));
+          const phase = (seed * 360 + seconds * velocity * (group === "gps" ? 0.9 : 2.15) + i * 17) % 360;
+          const inc = info.inclination;
+          const lat = clamp(Math.sin(phase * Math.PI / 180) * inc * (0.78 + seed * 0.18), -89.4, 89.4);
+          const lng = wrapLng(phase * (1.35 + groupIndex * 0.09) + plane * 31 + seed * 280 - 180);
+          const norad = 42000 + groupIndex * 1000 + i;
+          const suffix = group === "stations" ? ["ISS", "TIANGONG", "AXIOM", "ORBITAL-LAB"][i] : `${info.short}-${String(i + 1).padStart(3, "0")}`;
+          sats.push({
+            id: String(norad),
+            name: group === "stations" ? suffix : `${info.label.toUpperCase()} ${suffix}`,
+            group,
+            lat,
+            lng,
+            alt: altitude + (seed - 0.5) * (group === "gps" ? 900 : 80),
+            vel: velocity + (seed - 0.5) * 0.24,
+            source: "demo"
+          });
+        }
+      });
+
+      return sats;
+    }
+
+    function getVisibleSatellites() {
+      const q = state.query.trim().toLowerCase();
+      return state.allSatellites.filter((sat) => {
+        const groupMatch = state.selectedGroup === "all" || sat.group === state.selectedGroup;
+        const queryMatch = !q || sat.name.toLowerCase().includes(q) || sat.id.toLowerCase().includes(q);
+        return groupMatch && queryMatch;
+      });
+    }
+
+    function getSelectedSatellite() {
+      return state.allSatellites.find((sat) => sat.id === state.selectedId) || null;
+    }
+
+    function countsByGroup() {
+      const counts = new Map();
+      state.allSatellites.forEach((sat) => counts.set(sat.group, (counts.get(sat.group) || 0) + 1));
+      return counts;
+    }
+
+    function setToggle(button, isOn) {
+      button.classList.toggle("on", isOn);
+      button.setAttribute("aria-pressed", String(isOn));
+    }
+
+    function setSource(mode, text) {
+      state.demoMode = mode === "demo";
+      state.sourceText = text;
+      el.modePill.classList.toggle("demo", state.demoMode);
+      el.modeLabel.textContent = state.demoMode ? "Demo" : "Live";
+      el.sourceLabel.textContent = text;
+    }
+
+    function hideLoader() {
+      el.loader.classList.add("out");
+    }
+
+    function maybeHideLoader() {
+      if (state.globeReady && state.dataReady) hideLoader();
+    }
+
+    function renderStats(visibleSatellites) {
+      const groups = new Set(state.allSatellites.map((sat) => sat.group));
+      const avgAlt = visibleSatellites.length
+        ? visibleSatellites.reduce((sum, sat) => sum + sat.alt, 0) / visibleSatellites.length
+        : 0;
+      el.total.textContent = fmt0.format(state.allSatellites.length);
+      el.visible.textContent = fmt0.format(visibleSatellites.length);
+      el.avgAlt.textContent = fmt0.format(avgAlt);
+      el.groupCount.textContent = `${groups.size} group${groups.size === 1 ? "" : "s"}`;
+    }
+
+    function renderFilters() {
+      const counts = countsByGroup();
+      const total = state.allSatellites.length;
+      const entries = [["all", { label: "All Objects", color: "#eef9ff" }, total]];
+
+      Object.entries(GROUPS).forEach(([key, info]) => {
+        if (key !== "unknown" && counts.get(key)) entries.push([key, info, counts.get(key)]);
+      });
+      if (counts.get("unknown")) entries.push(["unknown", GROUPS.unknown, counts.get("unknown")]);
+
+      el.filters.innerHTML = entries.map(([key, info, count]) => `
+        <button class="filter-btn ${state.selectedGroup === key ? "on" : ""}" type="button" data-group="${key}" style="--accent:${info.color}">
+          <span class="filter-dot"></span>
+          <span class="filter-name">${escapeHTML(info.label)}</span>
+          <span class="filter-count">${fmt0.format(count)}</span>
+        </button>
+      `).join("");
+    }
+
+    function renderSatelliteList(visibleSatellites) {
+      const shown = visibleSatellites.slice(0, MAX_LIST_ITEMS);
+      el.listMeta.textContent = visibleSatellites.length > MAX_LIST_ITEMS
+        ? `${fmt0.format(shown.length)} of ${fmt0.format(visibleSatellites.length)} shown`
+        : `${fmt0.format(visibleSatellites.length)} shown`;
+
+      if (!visibleSatellites.length) {
+        el.satList.innerHTML = `<div class="empty">${state.allSatellites.length ? "No satellites match the current filter." : "Waiting for orbital data."}</div>`;
+        return;
+      }
+
+      el.satList.innerHTML = shown.map((sat) => {
+        const info = groupInfo(sat.group);
+        return `
+          <button class="sat-item ${state.selectedId === sat.id ? "sel" : ""}" type="button" data-id="${escapeHTML(sat.id)}" style="--accent:${info.color}">
+            <span class="sat-name">${escapeHTML(sat.name)}</span>
+            <span class="sat-code">${escapeHTML(info.short)}</span>
+            <span class="sat-meta">${fmt0.format(sat.alt)} km / ${fmt1.format(sat.vel)} km/s</span>
+            <span class="sat-meta">NORAD ${escapeHTML(sat.id)}</span>
+          </button>
+        `;
+      }).join("");
+    }
+
+    function renderInfoCard() {
+      const sat = getSelectedSatellite();
+      if (!sat) {
+        el.infoCard.classList.remove("show");
+        return;
+      }
+
+      const info = groupInfo(sat.group);
+      el.infoCard.style.setProperty("--accent", info.color);
+      el.satName.textContent = sat.name;
+      el.satGroup.textContent = info.label;
+      el.norad.textContent = sat.id;
+      el.alt.textContent = `${fmt0.format(sat.alt)} km`;
+      el.vel.textContent = `${fmt2.format(sat.vel)} km/s`;
+      el.latlon.textContent = `${fmt1.format(sat.lat)}, ${fmt1.format(sat.lng)}`;
+      el.infoCard.classList.add("show");
+    }
+
+    function visualOrbitAltitude(sat) {
+      return clamp(sat.alt / EARTH_RADIUS_KM, 0.055, 0.56);
+    }
+
+    function satelliteSpriteTexture(kind) {
+      if (satelliteTextures.has(kind)) return satelliteTextures.get(kind);
+
+      const size = kind === "core" ? 96 : 176;
+      const canvas = document.createElement("canvas");
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext("2d");
+      const center = size / 2;
+      const gradient = ctx.createRadialGradient(center, center, 0, center, center, center);
+
+      if (kind === "core") {
+        gradient.addColorStop(0, "rgba(255,255,255,1)");
+        gradient.addColorStop(0.16, "rgba(255,255,255,0.95)");
+        gradient.addColorStop(0.38, "rgba(255,255,255,0.58)");
+        gradient.addColorStop(0.72, "rgba(255,255,255,0.12)");
+        gradient.addColorStop(1, "rgba(255,255,255,0)");
+      } else if (kind === "contrast") {
+        gradient.addColorStop(0, "rgba(0,6,14,0.74)");
+        gradient.addColorStop(0.24, "rgba(0,10,22,0.56)");
+        gradient.addColorStop(0.48, "rgba(0,16,30,0.3)");
+        gradient.addColorStop(0.74, "rgba(0,0,0,0.12)");
+        gradient.addColorStop(1, "rgba(0,0,0,0)");
+      } else {
+        gradient.addColorStop(0, "rgba(255,255,255,0.78)");
+        gradient.addColorStop(0.18, "rgba(255,255,255,0.38)");
+        gradient.addColorStop(0.45, "rgba(255,255,255,0.18)");
+        gradient.addColorStop(1, "rgba(255,255,255,0)");
+      }
+
+      ctx.fillStyle = gradient;
+      ctx.fillRect(0, 0, size, size);
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
+      satelliteTextures.set(kind, texture);
+      return texture;
+    }
+
+    function createSprite(map, color, opacity, scale, depthTest = true, blending = THREE.AdditiveBlending) {
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+        map,
+        color: new THREE.Color(color),
+        transparent: true,
+        opacity,
+        depthTest,
+        depthWrite: false,
+        blending
+      }));
+      sprite.scale.set(scale, scale, 1);
+      return sprite;
+    }
+
+    function createSatelliteLight(d) {
+      const group = new THREE.Group();
+      group.userData.satId = d.id;
+
+      const contrast = createSprite(satelliteSpriteTexture("contrast"), "#00111f", d.contrastOpacity, d.contrastScale, true, THREE.NormalBlending);
+      contrast.userData.role = "contrast";
+      group.add(contrast);
+
+      const halo = createSprite(satelliteSpriteTexture("halo"), d.pointColor, d.haloOpacity, d.haloScale);
+      halo.userData.role = "halo";
+      group.add(halo);
+
+      const core = createSprite(satelliteSpriteTexture("core"), d.pointColor, d.coreOpacity, d.dotScale);
+      core.userData.role = "core";
+      group.add(core);
+
+      const pin = createSprite(satelliteSpriteTexture("core"), "#ffffff", d.selected ? 1 : 0.82, d.dotScale * 0.46, false);
+      pin.userData.role = "pin";
+      group.add(pin);
+
+      updateSatelliteLight(group, d);
+      return group;
+    }
+
+    function updateSatelliteLight(obj, d) {
+      obj.children.forEach((child) => {
+        const role = child.userData.role;
+        if (role === "contrast") {
+          child.material.opacity = d.contrastOpacity;
+          child.scale.set(d.contrastScale, d.contrastScale, 1);
+        }
+        if (role === "halo") {
+          child.material.color.set(d.pointColor);
+          child.material.opacity = d.haloOpacity;
+          child.scale.set(d.haloScale, d.haloScale, 1);
+        }
+        if (role === "core") {
+          child.material.color.set(d.pointColor);
+          child.material.opacity = d.coreOpacity;
+          child.scale.set(d.dotScale, d.dotScale, 1);
+        }
+        if (role === "pin") {
+          child.material.opacity = d.selected ? 1 : 0.82;
+          child.scale.set(d.dotScale * 0.46, d.dotScale * 0.46, 1);
+        }
+      });
+    }
+
+    function pointDataFor(sat) {
+      const info = groupInfo(sat.group);
+      const selected = sat.id === state.selectedId;
+      const seed = hashNumber(`${sat.id}-${sat.group}`);
+      const baseSize = sat.group === "stations" ? 2.4 : sat.group === "gps" ? 1.9 : 1.45;
+      const dotScale = selected ? 4.2 : baseSize * (0.9 + seed * 0.72);
+      return {
+        ...sat,
+        selected,
+        pointAlt: visualOrbitAltitude(sat) + 0.034,
+        pointColor: selected ? "#ffffff" : info.color,
+        dotScale,
+        haloScale: selected ? 13.5 : dotScale * (5.8 + seed * 2.4),
+        contrastScale: selected ? 11.5 : dotScale * (3 + seed),
+        coreOpacity: 1,
+        haloOpacity: selected ? 1 : 0.68 + seed * 0.24,
+        contrastOpacity: selected ? 0.62 : 0.44
+      };
+    }
+
+    function orbitPathFor(sat) {
+      const info = groupInfo(sat.group);
+      const points = [];
+      const offset = hashNumber(sat.id) * 360;
+      const altitude = visualOrbitAltitude(sat) + 0.018;
+      const inclination = clamp(info.inclination, 15, 88);
+      const node = sat.lng - 120 + offset * 0.42;
+
+      for (let i = 0; i <= 96; i += 1) {
+        const angle = (i / 96) * 360 + offset;
+        const lat = Math.sin(angle * Math.PI / 180) * inclination;
+        const lng = wrapLng(node + angle * 1.74);
+        points.push([lat, lng, altitude]);
+      }
+
+      return {
+        satId: sat.id,
+        group: sat.group,
+        color: info.color,
+        points
+      };
+    }
+
+    function renderGlobe(visibleSatellites) {
+      if (!globe) return;
+
+      const renderKey = [
+        visibleSatellites.map((sat) => `${sat.id}:${sat.lat.toFixed(2)}:${sat.lng.toFixed(2)}`).join("|"),
+        state.selectedId,
+        state.showLabels,
+        state.showTrails
+      ].join("::");
+
+      if (renderKey === state.lastRenderKey) return;
+      state.lastRenderKey = renderKey;
+
+      const points = visibleSatellites.map(pointDataFor);
+      const selected = getSelectedSatellite();
+      const labelStride = Math.max(1, Math.ceil(visibleSatellites.length / 64));
+      const labels = state.showLabels
+        ? visibleSatellites.filter((sat, index) => sat.id === state.selectedId || index % labelStride === 0).slice(0, 80)
+        : [];
+
+      const trails = state.showTrails
+        ? visibleSatellites
+          .filter((sat, index) => {
+            const info = groupInfo(sat.group);
+            return sat.id === state.selectedId || index % info.trailEvery === 0;
+          })
+          .slice(0, 90)
+          .map(orbitPathFor)
+        : [];
+
+      globe.pointsData([]).objectsData([]);
+
+      globe
+        .objectsData(points)
+        .objectLat((d) => d.lat)
+        .objectLng((d) => d.lng)
+        .objectAltitude((d) => d.pointAlt)
+        .objectThreeObject((d) => createSatelliteLight(d))
+        .objectFacesSurface(false)
+        .objectLabel((d) => `${d.name}<br>NORAD ${d.id}`)
+        .onObjectClick((sat) => selectSatellite(sat.id, true));
+
+      globe
+        .labelsData(labels)
+        .labelLat((d) => d.lat)
+        .labelLng((d) => d.lng)
+        .labelAltitude((d) => d.alt / EARTH_RADIUS_KM + 0.04)
+        .labelText((d) => d.name.replace(/\s+\d+$/, ""))
+        .labelSize((d) => d.id === state.selectedId ? 0.34 : 0.22)
+        .labelDotRadius(0.14)
+        .labelColor((d) => d.id === state.selectedId ? "#ffffff" : groupInfo(d.group).color)
+        .labelResolution(3);
+
+      globe
+        .pathsData(trails)
+        .pathPoints("points")
+        .pathPointLat((p) => p[0])
+        .pathPointLng((p) => p[1])
+        .pathPointAlt((p) => p[2])
+        .pathColor((d) => d.satId === state.selectedId ? "#ffffff" : d.color)
+        .pathStroke((d) => d.satId === state.selectedId ? 1.25 : 0.42)
+        .pathDashLength((d) => d.satId === state.selectedId ? 0.18 : 0.08)
+        .pathDashGap(0.04)
+        .pathDashAnimateTime((d) => d.satId === state.selectedId ? 3800 : 7200);
+
+      globe
+        .ringsData(selected ? [selected] : [])
+        .ringLat((d) => d.lat)
+        .ringLng((d) => d.lng)
+        .ringAltitude((d) => visualOrbitAltitude(d) + 0.026)
+        .ringColor((d) => {
+          const color = groupInfo(d.group).color;
+          return (t) => `${color}${Math.round((1 - t) * 230).toString(16).padStart(2, "0")}`;
+        })
+        .ringMaxRadius(4)
+        .ringPropagationSpeed(1.6)
+        .ringRepeatPeriod(900);
+    }
+
+    function renderAll() {
+      const visibleSatellites = getVisibleSatellites();
+      renderStats(visibleSatellites);
+      renderFilters();
+      renderSatelliteList(visibleSatellites);
+      renderInfoCard();
+      renderGlobe(visibleSatellites);
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    function applyGlobeMaterial() {
+      if (!globe) return;
+      const material = globe.globeMaterial();
+      material.color    = new THREE.Color(0xffffff);
+      material.emissive = new THREE.Color(0xffeedd); /* warm city-light tint */
+      material.emissiveIntensity = state.nightBrightness;
+      material.shininess = 6;
+      material.needsUpdate = true;
+
+      const renderer = globe.renderer();
+      renderer.outputColorSpace   = THREE.SRGBColorSpace;
+      renderer.toneMapping        = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 0.92 + state.nightBrightness * 0.72;
+    }
+
+    function initGlobe() {
+      const wrap = document.getElementById("globe-wrap");
+
+      globe = new Globe(wrap)
+        .width(window.innerWidth)
+        .height(window.innerHeight)
+        .globeImageUrl(EARTH_NIGHT)  /* Night lights as primary texture */
+        .bumpImageUrl(EARTH_BUMP)
+        .backgroundImageUrl(STARFIELD)
+        .showAtmosphere(state.showAtmo)
+        .atmosphereColor("rgba(80,160,255,0.85)")
+        .atmosphereAltitude(0.24)
+        .onGlobeReady(() => {
+          state.globeReady = true;
+          maybeHideLoader();
+        })
+        .pointOfView(HOME_VIEW, 0);
+
+      const scene = globe.scene();
+      const defaultLights = [];
+      scene.traverse((obj) => {
+        if (obj.isLight) defaultLights.push(obj);
+      });
+      defaultLights.forEach((light) => light.parent?.remove(light));
+
+      /* Sun — warm key light from upper-left */
+      const sun = new THREE.DirectionalLight(0xfff0d8, 2.10);
+      sun.position.set(-1.8, 0.65, 1.4).normalize();
+      scene.add(sun);
+
+      /* Rim — cool cyan earthshine from opposite side */
+      const rim = new THREE.DirectionalLight(0x4499cc, 1.85);
+      rim.position.set(1.6, 0.2, -1.1).normalize();
+      scene.add(rim);
+
+      /* Very low ambient — preserves night-side darkness */
+      const earthGlow = new THREE.AmbientLight(0x0d1a28, 0.95);
+      scene.add(earthGlow);
+      scene.fog = new THREE.FogExp2(0x010208, 0.00040);
+
+      const controls = globe.controls();
+      controls.autoRotate = state.autoRotate;
+      controls.autoRotateSpeed = 0.48;
+      controls.enableDamping = true;
+      controls.dampingFactor = 0.075;
+      controls.enableZoom = true;
+      controls.enablePan = true;
+      controls.minDistance = 145;
+      controls.maxDistance = 620;
+      controls.zoomSpeed = 0.8;
+
+      applyGlobeMaterial();
+      const textureLoader = new THREE.TextureLoader();
+      textureLoader.setCrossOrigin("anonymous");
+
+      /* Load night lights as the emissive map.
+         Because globeImageUrl is EARTH_NIGHT, the globe surface shows city
+         lights. The emissiveMap reinforces them with extra intensity.
+         The sun directional light illuminates the day side naturally. */
+      textureLoader.load(EARTH_NIGHT, (texture) => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = globe.renderer().capabilities.getMaxAnisotropy();
+        const material = globe.globeMaterial();
+        material.emissiveMap = texture;
+        material.needsUpdate = true;
+        applyGlobeMaterial();
+      });
+
+      globe.onGlobeClick(() => {
+        state.selectedId = null;
+        renderAll();
+      });
+
+      window.addEventListener("resize", () => {
+        globe.width(window.innerWidth).height(window.innerHeight);
+        globe.renderer().setSize(window.innerWidth, window.innerHeight);
+      });
+    }
+
+    function selectSatellite(id, moveCamera = false) {
+      state.selectedId = String(id);
+      const sat = getSelectedSatellite();
+      if (sat && moveCamera && globe) {
+        globe.pointOfView({ lat: sat.lat, lng: sat.lng, altitude: 1.05 }, 900);
+      }
+      state.lastRenderKey = "";
+      renderAll();
+    }
+
+    async function fetchSatellites({ initial = false } = {}) {
+      try {
+        const response = await fetch(`${API_BASE}/positions`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+        const payload = await response.json();
+        const rows = Array.isArray(payload) ? payload : payload.satellites || payload.positions || [];
+        if (!Array.isArray(rows)) throw new Error("Unexpected response shape");
+
+        state.allSatellites = rows.map(normalizeSatellite).filter((sat) => Number.isFinite(sat.lat) && Number.isFinite(sat.lng));
+        state.lastDataAt = Date.now();
+        setSource("live", `localhost:8000`);
+        state.lastRenderKey = "";
+        renderAll();
+        if (initial) {
+          state.dataReady = true;
+          maybeHideLoader();
+        }
+      } catch (error) {
+        if (initial || !state.allSatellites.length) {
+          state.allSatellites = generateDemoSatellites();
+          setSource("demo", "Demo orbit feed");
+          state.lastRenderKey = "";
+          renderAll();
+          state.dataReady = true;
+          maybeHideLoader();
+        } else {
+          setSource(state.demoMode ? "demo" : "live", state.demoMode ? "Demo orbit feed" : "Live feed paused");
+        }
+        console.info(`NEXUS using fallback telemetry because ${API_BASE} is unavailable.`);
+      }
+    }
+
+    function scheduleRefresh() {
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(async () => {
+        await fetchSatellites();
+        scheduleRefresh();
+      }, state.demoMode ? 15000 : 5000);
+    }
+
+    function setupControls() {
+      el.filters.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-group]");
+        if (!button) return;
+        state.selectedGroup = button.dataset.group;
+        state.lastRenderKey = "";
+        renderAll();
+      });
+
+      el.satList.addEventListener("click", (event) => {
+        const button = event.target.closest("[data-id]");
+        if (!button) return;
+        selectSatellite(button.dataset.id, true);
+      });
+
+      el.search.addEventListener("input", (event) => {
+        state.query = event.target.value;
+        state.lastRenderKey = "";
+        renderAll();
+      });
+
+      el.btnRot.addEventListener("click", () => {
+        state.autoRotate = !state.autoRotate;
+        if (globe) globe.controls().autoRotate = state.autoRotate;
+        setToggle(el.btnRot, state.autoRotate);
+      });
+
+      el.btnLbl.addEventListener("click", () => {
+        state.showLabels = !state.showLabels;
+        setToggle(el.btnLbl, state.showLabels);
+        state.lastRenderKey = "";
+        renderAll();
+      });
+
+      el.btnAtm.addEventListener("click", () => {
+        state.showAtmo = !state.showAtmo;
+        if (globe) globe.showAtmosphere(state.showAtmo);
+        setToggle(el.btnAtm, state.showAtmo);
+      });
+
+      el.btnTrails.addEventListener("click", () => {
+        state.showTrails = !state.showTrails;
+        setToggle(el.btnTrails, state.showTrails);
+        state.lastRenderKey = "";
+        renderAll();
+      });
+
+      el.btnHome.addEventListener("click", () => {
+        if (globe) globe.pointOfView(HOME_VIEW, 900);
+      });
+
+      el.brightness.addEventListener("input", (event) => {
+        state.nightBrightness = Number(event.target.value);
+        applyGlobeMaterial();
+      });
+    }
+
+    function tick() {
+      const now = new Date();
+      el.clock.textContent = now.toISOString().slice(11, 19);
+
+      if (state.demoMode) {
+        demoFrame += 1;
+        if (demoFrame % 42 === 0) {
+          state.allSatellites = generateDemoSatellites();
+          state.lastRenderKey = "";
+          renderAll();
+        }
+      }
+
+      requestAnimationFrame(tick);
+    }
+
+    async function start() {
+      if (window.lucide) window.lucide.createIcons();
+      initGlobe();
+      setupControls();
+      renderAll();
+      await fetchSatellites({ initial: true });
+      scheduleRefresh();
+      setToggle(el.btnRot, state.autoRotate);
+      setToggle(el.btnLbl, state.showLabels);
+      setToggle(el.btnAtm, state.showAtmo);
+      setToggle(el.btnTrails, state.showTrails);
+      requestAnimationFrame(tick);
+      window.setTimeout(() => {
+        state.globeReady = true;
+        maybeHideLoader();
+      }, 9000);
+    }
+
+    start();
+  </script>
+</body>
+</html>

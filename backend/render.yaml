@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: nexus-satellite-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: TLE_REFRESH_HOURS
+        value: "6"
+      - key: MAX_SATS_PER_GROUP
+        value: "500"
+      - key: PYTHON_VERSION
+        value: "3.11.0"
