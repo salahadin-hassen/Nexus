@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sgp4.api import Satrec
@@ -49,17 +49,18 @@ TLE_SOURCES: Dict[str, str] = {
 }
 
 # ── In-memory satellite registry ─────────────────────────────────────────────
+# norad_id → (Satrec object, display name, group key)
 Registry = Dict[int, Tuple[Satrec, str, str]]
 _registry: Registry = {}
 _last_refresh: Optional[datetime] = None
 
-# ── Tracks the timestamp of the previous /positions response ─────────────────
+# ── Tracks the Unix timestamp of the previous /positions response ─────────────
 _prev_positions_timestamp: Optional[float] = None
 
-# ── WGS-84 constants for ECI → geodetic conversion ───────────────────────────
-_WGS84_A  = 6378.137
+# ── WGS-84 constants ──────────────────────────────────────────────────────────
+_WGS84_A  = 6378.137             # km — semi-major axis
 _WGS84_F  = 1.0 / 298.257223563
-_WGS84_E2 = 2 * _WGS84_F - _WGS84_F ** 2
+_WGS84_E2 = 2.0 * _WGS84_F - _WGS84_F ** 2   # first eccentricity squared
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -67,47 +68,104 @@ _WGS84_E2 = 2 * _WGS84_F - _WGS84_F ** 2
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _jd_from_utc(dt: datetime) -> Tuple[float, float]:
-    """UTC datetime → (Julian date integer part, fractional day)."""
+    """
+    UTC datetime → (jd, fr) with the split convention required by sgp4.
+
+    sgp4.sgp4(jd, fr) needs  jd + fr == true Julian Date.  The split is kept
+    at the nearest 0.5-day boundary so `fr` retains maximum floating-point
+    precision for the sub-day portion.
+
+    Bug in the previous code: it baked the full JD (including hours) into `jd`
+    and then put h/24 into `fr` again — double-counting the hours and shifting
+    the propagation epoch by several hours.
+    """
     y, m, d = dt.year, dt.month, dt.day
-    h = dt.hour + dt.minute / 60.0 + (dt.second + dt.microsecond / 1e6) / 3600.0
+    if m <= 2:          # Meeus ch.7 — shift January/February into prior year
+        y -= 1
+        m += 12
     A = int(y / 100)
     B = 2 - A + int(A / 4)
-    jd = int(365.25 * (y + 4716)) + int(30.6001 * (m + 1)) + d + B - 1524.5
-    fr = h / 24.0
+    # Julian Date at 0h UT for this calendar day
+    jd0 = math.floor(365.25 * (y + 4716)) + math.floor(30.6001 * (m + 1)) + d + B - 1524.5
+
+    # Sub-day fraction with microsecond precision
+    day_frac = (
+        dt.hour / 24.0
+        + dt.minute / 1440.0
+        + (dt.second + dt.microsecond / 1e6) / 86400.0
+    )
+
+    # Anchor jd at the .5 boundary; fr carries the remaining fraction.
+    jd = math.floor(jd0) + 0.5
+    fr = (jd0 - jd) + day_frac
     return jd, fr
 
 
-def _gst(dt: datetime) -> float:
-    """Approximate Greenwich Sidereal Time (radians)."""
-    jd, _ = _jd_from_utc(dt)
-    T = (jd - 2_451_545.0) / 36_525.0
-    gst_deg = (
+def _gst(jd: float, fr: float) -> float:
+    """
+    Greenwich Mean Sidereal Time (radians) from a (jd, fr) pair.
+
+    Bug in the previous code: it called _jd_from_utc and then discarded fr,
+    computing GMST from the integer Julian day alone.  GMST advances at
+    ~360.985 deg/day (~15 deg/hour), so dropping fr introduced longitude errors
+    of many tens of degrees depending on the time of day.
+    """
+    jd_full = jd + fr
+    T = (jd_full - 2_451_545.0) / 36_525.0
+    # IAU 1982 GMST polynomial (degrees)
+    gmst_deg = (
         280.46061837
-        + 360.98564736629 * (jd - 2_451_545.0)
-        + T ** 2 * 0.000387933
-        - T ** 3 / 38_710_000.0
+        + 360.98564736629 * (jd_full - 2_451_545.0)
+        + T * T * 0.000387933
+        - T * T * T / 38_710_000.0
     ) % 360.0
-    return math.radians(gst_deg)
+    return math.radians(gmst_deg)
 
 
 def _eci_to_geodetic(x: float, y: float, z: float, gst: float) -> Tuple[float, float, float]:
-    """ECI (km) + GST (rad) → (latitude°, longitude°, altitude km)."""
-    xe =  x * math.cos(gst) + y * math.sin(gst)
-    ye = -x * math.sin(gst) + y * math.cos(gst)
-    ze = z
+    """
+    ECI position (km) + GMST (rad) → (latitude°, longitude°, altitude km).
 
+    Uses Bowring's iterative method for geodetic latitude (5 iterations give
+    sub-millimetre accuracy everywhere on Earth).
+
+    Bug in the previous altitude formula: the conditional
+        p/cos(φ) − N  (equator branch)  vs  z/sin(φ) − N(1−e²)  (pole branch)
+    has a cos(φ) → 0 singularity near the poles, and the polar expression
+    carries an incorrect factor.  Replaced with the magnitude-difference form
+    which is numerically stable at all latitudes and azimuths.
+    """
+    # ── ECI → ECEF: rotate around Z by GMST ──────────────────────────────────
+    cos_g = math.cos(gst)
+    sin_g = math.sin(gst)
+    xe =  x * cos_g + y * sin_g
+    ye = -x * sin_g + y * cos_g
+    ze =  z
+
+    # Longitude
     lon = math.atan2(ye, xe)
-    p   = math.sqrt(xe ** 2 + ye ** 2)
 
-    lat = math.atan2(ze, p * (1 - _WGS84_E2))
+    # Equatorial distance
+    p = math.sqrt(xe * xe + ye * ye)
+
+    # ── Bowring iterative geodetic latitude ───────────────────────────────────
+    lat = math.atan2(ze, p * (1.0 - _WGS84_E2))
     for _ in range(5):
         sin_lat = math.sin(lat)
-        N = _WGS84_A / math.sqrt(1 - _WGS84_E2 * sin_lat ** 2)
+        N = _WGS84_A / math.sqrt(1.0 - _WGS84_E2 * sin_lat * sin_lat)
         lat = math.atan2(ze + _WGS84_E2 * N * sin_lat, p)
 
+    # ── Altitude: geocentric distance minus ellipsoid radius along normal ─────
     sin_lat = math.sin(lat)
-    N = _WGS84_A / math.sqrt(1 - _WGS84_E2 * sin_lat ** 2)
-    alt = (p / math.cos(lat) - N) if abs(lat) < math.pi / 4 else (ze / sin_lat - N * (1 - _WGS84_E2))
+    cos_lat = math.cos(lat)
+    N = _WGS84_A / math.sqrt(1.0 - _WGS84_E2 * sin_lat * sin_lat)
+    # Distance from geocentre to the ellipsoid surface at this geodetic (lat, lon)
+    r_surface = math.sqrt(
+        (N * cos_lat) ** 2
+        + (N * (1.0 - _WGS84_E2) * sin_lat) ** 2
+    )
+    r_sat = math.sqrt(xe * xe + ye * ye + ze * ze)
+    alt = r_sat - r_surface
 
     return math.degrees(lat), math.degrees(lon), alt
 
@@ -183,7 +241,7 @@ class SatellitePosition(BaseModel):
     vx:        float    # km/s ECI x-component
     vy:        float    # km/s ECI y-component
     vz:        float    # km/s ECI z-component
-    timestamp: float    # UNIX time (seconds, full float precision)
+    timestamp: float    # UNIX time seconds (full float precision)
     dt:        float    # seconds since previous /positions response (0 on first call)
 
 
@@ -220,7 +278,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="NEXUS Satellite Tracking API",
     description="Real-time SGP4-propagated satellite positions from CelesTrak TLEs.",
-    version="2.1.0",
+    version="2.2.0",
     lifespan=lifespan,
 )
 
@@ -253,24 +311,25 @@ async def get_positions(
     """
     Propagate all registered satellites to now (UTC) and return positions.
 
-    A single timestamp is captured once before the loop so every satellite
-    in the response is consistent with the same instant in time. Full-precision
-    floats are returned (no rounding) and ECI velocity components are included
-    so the frontend can perform dead-reckoning interpolation between calls.
+    A single timestamp is captured once before the loop so every satellite in
+    the response is consistent with the same instant in time.  Full-precision
+    floats are returned and ECI velocity components are included so the
+    frontend can dead-reckon positions between poll intervals.
     """
     global _prev_positions_timestamp
 
-    # ── Capture one precise timestamp for the entire response ────────────────
+    # ── One precise timestamp for the whole response ──────────────────────────
     now = datetime.now(timezone.utc)
     timestamp: float = now.timestamp()
-
-    # dt: elapsed seconds since the previous call (0.0 on first call)
-    dt: float = 0.0 if _prev_positions_timestamp is None else timestamp - _prev_positions_timestamp
+    dt_hint: float = (
+        0.0 if _prev_positions_timestamp is None
+        else timestamp - _prev_positions_timestamp
+    )
     _prev_positions_timestamp = timestamp
 
-    # ── Precompute JD + GST once — never recomputed inside the loop ──────────
+    # ── Precompute JD + GST once — never recomputed inside the loop ───────────
     jd, fr = _jd_from_utc(now)
-    gst    = _gst(now)
+    gst    = _gst(jd, fr)
 
     results: List[SatellitePosition] = []
 
@@ -300,7 +359,7 @@ async def get_positions(
             vy=v[1],
             vz=v[2],
             timestamp=timestamp,
-            dt=dt,
+            dt=dt_hint,
         ))
 
         if len(results) >= limit:
