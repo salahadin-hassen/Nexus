@@ -32,7 +32,6 @@ log = logging.getLogger("nexus")
 # ── Config from env ───────────────────────────────────────────────────────────
 CORS_ORIGINS: List[str] = os.getenv(
     "CORS_ORIGINS",
-    # defaults: local dev + Vercel wildcard (set your real domain in prod)
     "http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500,https://*.vercel.app",
 ).split(",")
 
@@ -50,13 +49,15 @@ TLE_SOURCES: Dict[str, str] = {
 }
 
 # ── In-memory satellite registry ─────────────────────────────────────────────
-# norad_id → (Satrec object, display name, group key)
 Registry = Dict[int, Tuple[Satrec, str, str]]
 _registry: Registry = {}
 _last_refresh: Optional[datetime] = None
 
+# ── Tracks the timestamp of the previous /positions response ─────────────────
+_prev_positions_timestamp: Optional[float] = None
+
 # ── WGS-84 constants for ECI → geodetic conversion ───────────────────────────
-_WGS84_A  = 6378.137          # km — equatorial radius
+_WGS84_A  = 6378.137
 _WGS84_F  = 1.0 / 298.257223563
 _WGS84_E2 = 2 * _WGS84_F - _WGS84_F ** 2
 
@@ -91,7 +92,6 @@ def _gst(dt: datetime) -> float:
 
 def _eci_to_geodetic(x: float, y: float, z: float, gst: float) -> Tuple[float, float, float]:
     """ECI (km) + GST (rad) → (latitude°, longitude°, altitude km)."""
-    # Rotate ECI → ECEF
     xe =  x * math.cos(gst) + y * math.sin(gst)
     ye = -x * math.sin(gst) + y * math.cos(gst)
     ze = z
@@ -99,7 +99,6 @@ def _eci_to_geodetic(x: float, y: float, z: float, gst: float) -> Tuple[float, f
     lon = math.atan2(ye, xe)
     p   = math.sqrt(xe ** 2 + ye ** 2)
 
-    # Bowring iterative geodetic latitude (5 iterations → sub-metre accuracy)
     lat = math.atan2(ze, p * (1 - _WGS84_E2))
     for _ in range(5):
         sin_lat = math.sin(lat)
@@ -174,13 +173,18 @@ async def refresh_tles() -> None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SatellitePosition(BaseModel):
-    id:    int
-    name:  str
-    group: str
-    lat:   float
-    lng:   float
-    alt:   float   # km above MSL
-    vel:   float   # km/s
+    id:        int
+    name:      str
+    group:     str
+    lat:       float
+    lng:       float
+    alt:       float    # km above MSL
+    vel:       float    # km/s scalar
+    vx:        float    # km/s ECI x-component
+    vy:        float    # km/s ECI y-component
+    vz:        float    # km/s ECI z-component
+    timestamp: float    # UNIX time (seconds, full float precision)
+    dt:        float    # seconds since previous /positions response (0 on first call)
 
 
 class MetaResponse(BaseModel):
@@ -196,10 +200,8 @@ class MetaResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initial load on startup
     await refresh_tles()
 
-    # Periodic background refresh
     async def _bg_refresh():
         while True:
             await asyncio.sleep(TLE_REFRESH_HOURS * 3600)
@@ -218,13 +220,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="NEXUS Satellite Tracking API",
     description="Real-time SGP4-propagated satellite positions from CelesTrak TLEs.",
-    version="2.0.0",
+    version="2.1.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # tightened in prod via CORS_ORIGINS env var
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["GET"],
     allow_headers=["*"],
@@ -250,9 +252,23 @@ async def get_positions(
 ):
     """
     Propagate all registered satellites to now (UTC) and return positions.
-    This is the hot endpoint — called every 5 seconds by the frontend.
+
+    A single timestamp is captured once before the loop so every satellite
+    in the response is consistent with the same instant in time. Full-precision
+    floats are returned (no rounding) and ECI velocity components are included
+    so the frontend can perform dead-reckoning interpolation between calls.
     """
+    global _prev_positions_timestamp
+
+    # ── Capture one precise timestamp for the entire response ────────────────
     now = datetime.now(timezone.utc)
+    timestamp: float = now.timestamp()
+
+    # dt: elapsed seconds since the previous call (0.0 on first call)
+    dt: float = 0.0 if _prev_positions_timestamp is None else timestamp - _prev_positions_timestamp
+    _prev_positions_timestamp = timestamp
+
+    # ── Precompute JD + GST once — never recomputed inside the loop ──────────
     jd, fr = _jd_from_utc(now)
     gst    = _gst(now)
 
@@ -264,7 +280,7 @@ async def get_positions(
 
         err, r, v = sat.sgp4(jd, fr)
         if err != 0:
-            continue  # satellite outside valid range — skip silently
+            continue
 
         try:
             lat, lng, alt = _eci_to_geodetic(r[0], r[1], r[2], gst)
@@ -273,9 +289,18 @@ async def get_positions(
             continue
 
         results.append(SatellitePosition(
-            id=norad, name=name, group=grp,
-            lat=round(lat, 4), lng=round(lng, 4),
-            alt=round(alt, 2), vel=round(vel, 4),
+            id=norad,
+            name=name,
+            group=grp,
+            lat=lat,
+            lng=lng,
+            alt=alt,
+            vel=vel,
+            vx=v[0],
+            vy=v[1],
+            vz=v[2],
+            timestamp=timestamp,
+            dt=dt,
         ))
 
         if len(results) >= limit:
@@ -295,7 +320,7 @@ async def get_meta():
         groups=dict(counts),
         server_time=datetime.now(timezone.utc).isoformat(),
     )
-import os
+
 
 if __name__ == "__main__":
     import uvicorn
