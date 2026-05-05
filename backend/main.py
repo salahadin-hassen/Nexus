@@ -1,23 +1,22 @@
 """
 NEXUS Satellite Tracking — FastAPI Backend
 ==========================================
-Fetches real TLE data from CelesTrak every 6 hours.
+Fetches real TLE data from CelesTrak every N hours.
 Propagates positions with full SGP4 via the `sgp4` library.
 Serves a clean JSON API consumed by the frontend.
-
-Free deployment: Railway · Render · Fly.io (see README)
 """
 
 import asyncio
 import logging
 import math
 import os
+from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sgp4.api import Satrec
@@ -29,10 +28,9 @@ logging.basicConfig(
 )
 log = logging.getLogger("nexus")
 
-# ── Config from env ───────────────────────────────────────────────────────────
+# ── Config from environment ───────────────────────────────────────────────────
 CORS_ORIGINS: List[str] = os.getenv(
     "CORS_ORIGINS",
-    # defaults: local dev + Vercel wildcard (set your real domain in prod)
     "http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500,https://*.vercel.app",
 ).split(",")
 
@@ -42,31 +40,31 @@ MAX_SATS_PER_GROUP: int = int(os.getenv("MAX_SATS_PER_GROUP", "500"))
 # ── CelesTrak TLE sources ─────────────────────────────────────────────────────
 TLE_SOURCES: Dict[str, str] = {
     "starlink": "https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle",
-    "oneweb":   "https://celestrak.org/NORAD/elements/gp.php?GROUP=oneweb&FORMAT=tle",
-    "gps":      "https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=tle",
-    "weather":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
+    "oneweb": "https://celestrak.org/NORAD/elements/gp.php?GROUP=oneweb&FORMAT=tle",
+    "gps": "https://celestrak.org/NORAD/elements/gp.php?GROUP=gps-ops&FORMAT=tle",
+    "weather": "https://celestrak.org/NORAD/elements/gp.php?GROUP=weather&FORMAT=tle",
     "stations": "https://celestrak.org/NORAD/elements/gp.php?GROUP=stations&FORMAT=tle",
-    "iridium":  "https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-NEXT&FORMAT=tle",
+    "iridium": "https://celestrak.org/NORAD/elements/gp.php?GROUP=iridium-NEXT&FORMAT=tle",
 }
 
-# ── In-memory satellite registry ─────────────────────────────────────────────
+# ── WGS‑84 constants for ECI → geodetic conversion ───────────────────────────
+_WGS84_A = 6378.137          # km — equatorial radius
+_WGS84_F = 1.0 / 298.257223563
+_WGS84_E2 = 2 * _WGS84_F - _WGS84_F**2  # squared eccentricity
+
+# ── In‑memory satellite registry (atomically replaced by refresher) ──────────
 # norad_id → (Satrec object, display name, group key)
 Registry = Dict[int, Tuple[Satrec, str, str]]
 _registry: Registry = {}
 _last_refresh: Optional[datetime] = None
 
-# ── WGS-84 constants for ECI → geodetic conversion ───────────────────────────
-_WGS84_A  = 6378.137          # km — equatorial radius
-_WGS84_F  = 1.0 / 298.257223563
-_WGS84_E2 = 2 * _WGS84_F - _WGS84_F ** 2
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-# COORDINATE MATH
+#  COORDINATE MATH – all functions work on UTC datetime objects
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _jd_from_utc(dt: datetime) -> Tuple[float, float]:
-    """UTC datetime → (Julian date integer part, fractional day)."""
+    """Return (Julian date integer part at 0h UT, fractional day)."""
     y, m, d = dt.year, dt.month, dt.day
     h = dt.hour + dt.minute / 60.0 + (dt.second + dt.microsecond / 1e6) / 3600.0
     A = int(y / 100)
@@ -76,49 +74,57 @@ def _jd_from_utc(dt: datetime) -> Tuple[float, float]:
     return jd, fr
 
 
-def _gst(dt: datetime) -> float:
-    """Approximate Greenwich Sidereal Time (radians)."""
-    jd, _ = _jd_from_utc(dt)
-    T = (jd - 2_451_545.0) / 36_525.0
-    gst_deg = (
-        280.46061837
-        + 360.98564736629 * (jd - 2_451_545.0)
-        + T ** 2 * 0.000387933
-        - T ** 3 / 38_710_000.0
-    ) % 360.0
-    return math.radians(gst_deg)
+def _gmst_rad(dt: datetime) -> float:
+    """
+    Greenwich Mean Sidereal Time (radians) for the exact UTC instant.
+    Valid for any date (IAU 1982/2000 expression via full Julian date).
+    """
+    jd_int, fr = _jd_from_utc(dt)
+    jd_full = jd_int + fr                     # Julian date with fraction
+    # GMST in degrees (Meeus‑style, high accuracy)
+    d = jd_full - 2451545.0                   # days since J2000.0
+    gmst_deg = (280.46061837 + 360.98564736629 * d) % 360.0
+    return math.radians(gmst_deg)
 
 
-def _eci_to_geodetic(x: float, y: float, z: float, gst: float) -> Tuple[float, float, float]:
-    """ECI (km) + GST (rad) → (latitude°, longitude°, altitude km)."""
+def _eci_to_geodetic(
+    x: float, y: float, z: float, gmst: float
+) -> Tuple[float, float, float]:
+    """
+    Convert ECI (km) to geodetic latitude (°), longitude (°), altitude (km).
+    Uses WGS‑84 constants and a Bowring iterative solution.
+    """
     # Rotate ECI → ECEF
-    xe =  x * math.cos(gst) + y * math.sin(gst)
-    ye = -x * math.sin(gst) + y * math.cos(gst)
+    xe = x * math.cos(gmst) + y * math.sin(gmst)
+    ye = -x * math.sin(gmst) + y * math.cos(gmst)
     ze = z
 
     lon = math.atan2(ye, xe)
-    p   = math.sqrt(xe ** 2 + ye ** 2)
+    p = math.hypot(xe, ye)
 
-    # Bowring iterative geodetic latitude (5 iterations → sub-metre accuracy)
+    # Bowring iteration (5 steps => sub‑metre accuracy)
     lat = math.atan2(ze, p * (1 - _WGS84_E2))
     for _ in range(5):
         sin_lat = math.sin(lat)
-        N = _WGS84_A / math.sqrt(1 - _WGS84_E2 * sin_lat ** 2)
+        N = _WGS84_A / math.sqrt(1 - _WGS84_E2 * sin_lat**2)
         lat = math.atan2(ze + _WGS84_E2 * N * sin_lat, p)
 
     sin_lat = math.sin(lat)
-    N = _WGS84_A / math.sqrt(1 - _WGS84_E2 * sin_lat ** 2)
-    alt = (p / math.cos(lat) - N) if abs(lat) < math.pi / 4 else (ze / sin_lat - N * (1 - _WGS84_E2))
+    N = _WGS84_A / math.sqrt(1 - _WGS84_E2 * sin_lat**2)
+    if abs(lat) < math.pi / 4:
+        alt = p / math.cos(lat) - N
+    else:
+        alt = ze / sin_lat - N * (1 - _WGS84_E2)
 
     return math.degrees(lat), math.degrees(lon), alt
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TLE FETCHING & PARSING
+#  TLE FETCHING & PARSING (thread‑safe – works on a supplied registry dict)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _parse_tle_text(raw: str, group: str) -> List[Tuple[str, str, str, str]]:
-    """Parse CelesTrak 3-line TLE format → list of (name, line1, line2, group)."""
+    """Parse CelesTrak 3‑line TLE format → list of (name, line1, line2, group)."""
     lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
     records = []
     i = 0
@@ -132,20 +138,22 @@ def _parse_tle_text(raw: str, group: str) -> List[Tuple[str, str, str, str]]:
     return records
 
 
-async def _fetch_group(client: httpx.AsyncClient, group: str, url: str) -> int:
-    """Fetch one constellation's TLEs. Returns number of sats loaded."""
+async def _fetch_group(
+    client: httpx.AsyncClient, group: str, url: str, registry: Registry
+) -> int:
+    """Fetch one constellation's TLEs and fill the given registry dict."""
     try:
         r = await client.get(url)
         r.raise_for_status()
         count = 0
         for name, l1, l2, g in _parse_tle_text(r.text, group):
+            if count >= MAX_SATS_PER_GROUP:
+                break
             try:
                 sat = Satrec.twoline2rv(l1, l2)
                 norad = int(l1[2:7])
-                _registry[norad] = (sat, name, g)
+                registry[norad] = (sat, name, g)
                 count += 1
-                if count >= MAX_SATS_PER_GROUP:
-                    break
             except Exception:
                 pass
         log.info("  ✓ %s: %d satellites", group, count)
@@ -156,50 +164,60 @@ async def _fetch_group(client: httpx.AsyncClient, group: str, url: str) -> int:
 
 
 async def refresh_tles() -> None:
-    """Fetch all TLE groups concurrently from CelesTrak."""
-    global _last_refresh
+    """
+    Fetch all TLE groups concurrently and atomically replace the global registry.
+    This avoids any concurrent‑modification issues with the API reader.
+    """
+    global _registry, _last_refresh
+    new_registry: Registry = {}
+
     log.info("TLE refresh starting — %d groups", len(TLE_SOURCES))
 
     async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-        tasks = [_fetch_group(client, grp, url) for grp, url in TLE_SOURCES.items()]
+        tasks = [
+            _fetch_group(client, grp, url, new_registry)
+            for grp, url in TLE_SOURCES.items()
+        ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
     total = sum(r for r in results if isinstance(r, int))
+    # Atomic replacement – readers see a consistent snapshot
+    _registry = new_registry
     _last_refresh = datetime.now(timezone.utc)
     log.info("TLE refresh complete — %d total satellites in registry", total)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# PYDANTIC MODELS
+#  PYDANTIC MODELS
 # ══════════════════════════════════════════════════════════════════════════════
 
 class SatellitePosition(BaseModel):
-    id:    int
-    name:  str
+    id: int
+    name: str
     group: str
-    lat:   float
-    lng:   float
-    alt:   float   # km above MSL
-    vel:   float   # km/s
+    lat: float
+    lng: float
+    alt: float   # km above WGS‑84 ellipsoid
+    vel: float   # km/s
 
 
 class MetaResponse(BaseModel):
-    satellites:   int
+    satellites: int
     last_refresh: Optional[str]
-    groups:       Dict[str, int]
-    server_time:  str
+    groups: Dict[str, int]
+    server_time: str
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# APP LIFESPAN
+#  APP LIFESPAN
 # ══════════════════════════════════════════════════════════════════════════════
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Initial load on startup
+    # Initial load
     await refresh_tles()
 
-    # Periodic background refresh
+    # Background refresh task
     async def _bg_refresh():
         while True:
             await asyncio.sleep(TLE_REFRESH_HOURS * 3600)
@@ -212,19 +230,19 @@ async def lifespan(app: FastAPI):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# FASTAPI APP
+#  FASTAPI APP
 # ══════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
     title="NEXUS Satellite Tracking API",
-    description="Real-time SGP4-propagated satellite positions from CelesTrak TLEs.",
+    description="Real‑time SGP4‑propagated satellite positions from CelesTrak TLEs.",
     version="2.0.0",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],          # tightened in prod via CORS_ORIGINS env var
+    allow_origins=["*"],  # tighten in production via CORS_ORIGINS env
     allow_credentials=False,
     allow_methods=["GET"],
     allow_headers=["*"],
@@ -235,7 +253,7 @@ app.add_middleware(
 
 @app.get("/health", tags=["system"])
 async def health():
-    """Uptime check — used by Railway/Render health probes."""
+    """Health probe for orchestration platforms (Railway / Render)."""
     return {
         "status": "ok",
         "satellites": len(_registry),
@@ -245,38 +263,43 @@ async def health():
 
 @app.get("/positions", response_model=List[SatellitePosition], tags=["satellites"])
 async def get_positions(
-    group: Optional[str] = Query(None, description="Filter by constellation group"),
-    limit: int           = Query(2000, ge=1, le=10000),
+    group: Optional[str] = Query(None, description="Constellation filter"),
+    limit: int = Query(2000, ge=1, le=10000),
 ):
     """
-    Propagate all registered satellites to now (UTC) and return positions.
-    This is the hot endpoint — called every 5 seconds by the frontend.
+    Propagate all registered satellites to the current UTC time using SGP4
+    and return geodetic positions. Called by the frontend every 5 seconds.
     """
     now = datetime.now(timezone.utc)
-    jd, fr = _jd_from_utc(now)
-    gst    = _gst(now)
+    jd_int, fr = _jd_from_utc(now)
+    gmst = _gmst_rad(now)
 
+    # Snapshot the registry – safe because background refresher replaces the dict
+    registry_snapshot = _registry
     results: List[SatellitePosition] = []
 
-    for norad, (sat, name, grp) in list(_registry.items()):
+    for norad, (sat, name, grp) in registry_snapshot.items():
         if group and grp != group:
             continue
 
-        err, r, v = sat.sgp4(jd, fr)
+        err, r, v = sat.sgp4(jd_int, fr)
         if err != 0:
-            continue  # satellite outside valid range — skip silently
+            continue  # satellite outside SGP4 validity window
 
-        try:
-            lat, lng, alt = _eci_to_geodetic(r[0], r[1], r[2], gst)
-            vel = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
-        except Exception:
-            continue
+        lat, lng, alt = _eci_to_geodetic(r[0], r[1], r[2], gmst)
+        vel = math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
 
-        results.append(SatellitePosition(
-            id=norad, name=name, group=grp,
-            lat=round(lat, 4), lng=round(lng, 4),
-            alt=round(alt, 2), vel=round(vel, 4),
-        ))
+        results.append(
+            SatellitePosition(
+                id=norad,
+                name=name,
+                group=grp,
+                lat=round(lat, 4),
+                lng=round(lng, 4),
+                alt=round(alt, 2),
+                vel=round(vel, 4),
+            )
+        )
 
         if len(results) >= limit:
             break
@@ -286,8 +309,7 @@ async def get_positions(
 
 @app.get("/meta", response_model=MetaResponse, tags=["system"])
 async def get_meta():
-    """System metadata — total satellites, last refresh time, group counts."""
-    from collections import Counter
+    """Return summary data: total satellites, group counts, last refresh."""
     counts = Counter(grp for _, _, grp in _registry.values())
     return MetaResponse(
         satellites=len(_registry),
@@ -295,8 +317,9 @@ async def get_meta():
         groups=dict(counts),
         server_time=datetime.now(timezone.utc).isoformat(),
     )
-import os
 
+
+# ── Run (development) ─────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
